@@ -51,6 +51,7 @@ from stoix.utils.total_timestep_checker import check_total_timesteps
 from stoix.utils.training import make_learning_rate
 from stoix.wrappers.episode_metrics import get_final_step_metrics
 
+
 def get_env_specs(name: str) -> omegaconf.DictConfig:
     env = envpool.make(name, "gym")
     obs_shape = env.observation_space.shape
@@ -63,10 +64,12 @@ def get_env_specs(name: str) -> omegaconf.DictConfig:
         }
     )
 
+
 class CoreLearnerState(NamedTuple):
     params: Parameters
     opt_states: OptStates
     key: chex.PRNGKey
+
 
 def get_learner_fn(
     apply_fns: Tuple[ActorApply, CriticApply],
@@ -79,11 +82,11 @@ def get_learner_fn(
     actor_apply_fn, critic_apply_fn = apply_fns
     actor_update_fn, critic_update_fn = update_fns
 
-    def _update_step(learner_state: CoreLearnerState, traj_batch : PPOTransition) -> Tuple[CoreLearnerState, Tuple]:
+    def _update_step(learner_state: CoreLearnerState, traj_batch: PPOTransition) -> Tuple[CoreLearnerState, Tuple]:
 
         # CALCULATE ADVANTAGE
-        params, opt_states, key= learner_state
-        
+        params, opt_states, key = learner_state
+
         r_t = traj_batch.reward
         v_t = traj_batch.value
         d_t = 1.0 - traj_batch.done.astype(jnp.float32)
@@ -155,15 +158,9 @@ def get_learner_fn(
                 critic_grad_fn = jax.grad(_critic_loss_fn, has_aux=True)
                 critic_grads, critic_loss_info = critic_grad_fn(params.critic_params, traj_batch, targets)
 
-                # Compute the parallel mean (pmean) over the batch.
-                # This calculation is inspired by the Anakin architecture demo notebook.
-                # available at https://tinyurl.com/26tdzs5x
-                # This pmean could be a regular mean as the batch axis is on the same device.
-                actor_grads, actor_loss_info = jax.lax.pmean((actor_grads, actor_loss_info), axis_name="batch")
                 # pmean over devices.
                 actor_grads, actor_loss_info = jax.lax.pmean((actor_grads, actor_loss_info), axis_name="device")
 
-                critic_grads, critic_loss_info = jax.lax.pmean((critic_grads, critic_loss_info), axis_name="batch")
                 # pmean over devices.
                 critic_grads, critic_loss_info = jax.lax.pmean((critic_grads, critic_loss_info), axis_name="device")
 
@@ -213,25 +210,19 @@ def get_learner_fn(
 
         params, opt_states, traj_batch, advantages, targets, key = update_state
         learner_state = CoreLearnerState(params, opt_states, key)
-        metric = traj_batch.info
-        return learner_state, (metric, loss_info)
 
-    def learner_fn(learner_state: CoreLearnerState, traj_batch : PPOTransition) -> ExperimentOutput[CoreLearnerState]:
-        
-        learner_state, (episode_info, loss_info) = _update_step(learner_state, traj_batch)
-        
-        return ExperimentOutput(
-            learner_state=learner_state,
-            episode_metrics=episode_info,
-            train_metrics=loss_info,
-        )
+        return learner_state, loss_info
+
+    def learner_fn(learner_state: CoreLearnerState, traj_batch: PPOTransition) -> ExperimentOutput[CoreLearnerState]:
+
+        learner_state, loss_info = _update_step(learner_state, traj_batch)
+
+        return learner_state, loss_info
 
     return learner_fn
 
 
-def learner_setup(
-    keys: chex.Array, config: DictConfig
-) -> Tuple[LearnerFn[CoreLearnerState], Actor, CoreLearnerState]:
+def learner_setup(keys: chex.Array, config: DictConfig) -> Tuple[LearnerFn[CoreLearnerState], Actor, CoreLearnerState]:
     """Initialise learner_fn, network, optimiser, environment and states."""
     # Get available TPU cores.
     n_devices = len(jax.devices())
@@ -267,6 +258,8 @@ def learner_setup(
     # Initialise observation
     init_x = jnp.ones(config.obs_shape)
     init_x = jax.tree_util.tree_map(lambda x: x[None, ...], init_x)
+
+    print(init_x.shape, "is the shape of the initial observation")
 
     # Initialise actor params and optimiser state.
     actor_params = actor_network.init(actor_net_key, init_x)
@@ -315,70 +308,77 @@ def learner_setup(
     params, opt_states = replicate_learner
     init_learner_state = CoreLearnerState(params, opt_states, step_keys)
 
-    return learn, actor_network, init_learner_state
+    return learn, actor_network, critic_network, init_learner_state
 
 
 def run_experiment(_config: DictConfig) -> float:
     """Runs experiment."""
     config = copy.deepcopy(_config)
-    
+
+    env_specs = get_env_specs(config.env.scenario.name)
+    config = OmegaConf.merge(config, env_specs)
+
     # Get jax devices local and global for learning
     local_devices = jax.local_devices()
     global_devices = jax.devices()
     assert len(local_devices) == len(global_devices), "Local and global devices must be the same for now."
     actor_devices = [local_devices[device_id] for device_id in config.arch.actor.device_ids]
-    local_learner_devices = [
-        local_devices[device_id] for device_id in config.arch.learner.device_ids
-    ]
+    local_learner_devices = [local_devices[device_id] for device_id in config.arch.learner.device_ids]
     print(f"{Fore.YELLOW}{Style.BRIGHT}[Sebulba] Actors devices: {actor_devices}{Style.RESET_ALL}")
     print(f"{Fore.YELLOW}{Style.BRIGHT}[Sebulba] Learner devices: {local_learner_devices}{Style.RESET_ALL}")
 
     # Calculate total timesteps.
-    n_devices = len(jax.devices())
-    config.num_devices = n_devices
-    config = check_total_timesteps(config)
-    assert (
-        config.arch.num_updates >= config.arch.num_evaluation
-    ), "Number of updates per evaluation must be less than total number of updates."
+    # n_devices = len(jax.devices())
+    # config.num_devices = n_devices
+    # config = check_total_timesteps(config)
+    # assert (
+    #     config.arch.num_updates >= config.arch.num_evaluation
+    # ), "Number of updates per evaluation must be less than total number of updates."
 
     # PRNG keys.
     key, key_e, actor_net_key, critic_net_key = jax.random.split(jax.random.PRNGKey(config.arch.seed), num=4)
 
     # Setup learner.
-    learn, actor_network, learner_state = learner_setup((key, actor_net_key, critic_net_key), config)
-    
+    learn, actor_network, critic_network, learner_state = learner_setup((key, actor_net_key, critic_net_key), config)
+
     # Logger setup
     logger = StoixLogger(config)
     cfg: Dict = OmegaConf.to_container(config, resolve=True)
     cfg["arch"]["devices"] = jax.devices()
     pprint(cfg)
-    
+
     logger_manager = LoggerManager(logger)
     logger_manager.start()
-    
+
     def actor_fn(params: Parameters, obs: chex.Array, key: chex.PRNGKey) -> Tuple[chex.Array, Any]:
         """Actor function."""
-        return actor_network.apply(params.actor_params, obs)
-    
+        print(obs.shape)
+        pi = actor_network.apply(params.actor_params, obs)
+        action = pi.sample(seed=key)
+        logprob = pi.log_prob(action)
+        value = critic_network.apply(params.critic_params, obs)
+        extras = {
+            "logprobs": logprob,
+            "values": value.squeeze(),
+        }
+
+        return action, extras
+
     # Create the environments for train and eval.
     # Create environments factory, uses the same setup as seen in CleanRL
     env_factory = EnvPoolFactory(
         config.arch.seed,
         task_id=config.env.scenario.name,
-        env_type="dm",
+        env_type="gym",
         **config.env.kwargs,
     )
-    
-    env_specs = get_env_specs(config.env.scenario.name)
-    config = OmegaConf.merge(config, env_specs)
-    
+
     # build Pipeline to pass trajectories between Actor's and Learner
-    partial_pipeline = hydra.utils.instantiate(cfg.pipeline)
-    pipeline: core.Pipeline = partial_pipeline(learner_devices=local_learner_devices)
+    pipeline = core.Pipeline(max_size=5, learner_devices=local_learner_devices)
     pipeline.start()
-    
+
     key, learner_key, actors_key = jax.random.split(key, 3)
-    
+
     actors = []
     params_sources = []
     for actor_device in actor_devices:
@@ -387,7 +387,7 @@ def run_experiment(_config: DictConfig) -> float:
         params_source.start()
         params_sources.append(params_source)
 
-        for i in range(cfg.actor.actor_per_device):
+        for i in range(config.arch.actor.actor_per_device):
             actors_key, key = jax.random.split(actors_key)
             # Create Actors
             actor = AsyncActor(
@@ -398,6 +398,7 @@ def run_experiment(_config: DictConfig) -> float:
                 actor_fn,
                 key,
                 config.arch.actor,
+                logger_manager,
                 f"{actor_device.id}-{i}",
             )
             actors.append(actor)
@@ -409,20 +410,18 @@ def run_experiment(_config: DictConfig) -> float:
         learner_state,
         learn,
         learner_key,
+        logger_manager,
         on_params_change=[params_source.update for params_source in params_sources],
     )
-    
+
     # Start Learner and Actors
     learner.start()
     for actor in actors:
         actor.start()
-    
+
     try:
         # Create our stopper and wait for it to stop
-        stopper = LearnerStepStopper(
-            config,
-            logger_manager=logger_manager
-        )
+        stopper = LearnerStepStopper(config, logger_manager=logger_manager)
         stopper.wait()
     finally:
         print(f"{Fore.RED}{Style.BRIGHT}Shutting down{Style.RESET_ALL}")
@@ -472,8 +471,6 @@ def run_experiment(_config: DictConfig) -> float:
     #     * config.arch.update_batch_size
     #     * config.arch.num_envs
     # )
-
-    
 
     # Set up checkpointer
     # save_checkpoint = config.logger.checkpointing.save_model

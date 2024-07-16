@@ -12,13 +12,15 @@ from stoix.base_types import Observation, RNNObservation
 from stoix.networks.inputs import ObservationInput
 from stoix.networks.utils import parse_rnn_cell
 
+# TODO(edan): change the comments back
+
 
 class FeedForwardActor(nn.Module):
     """Simple Feedforward Actor Network."""
 
     action_head: nn.Module
     torso: nn.Module
-    input_layer: nn.Module = ObservationInput()
+    input_layer: nn.Module = lambda x: x  # ObservationInput()
 
     @nn.compact
     def __call__(self, observation: Observation) -> distrax.DistributionLike:
@@ -35,7 +37,7 @@ class FeedForwardCritic(nn.Module):
 
     critic_head: nn.Module
     torso: nn.Module
-    input_layer: nn.Module = ObservationInput()
+    input_layer: nn.Module = lambda x: x  # ObservationInput()
 
     @nn.compact
     def __call__(self, observation: Observation) -> chex.Array:

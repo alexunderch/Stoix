@@ -20,6 +20,7 @@ import omegaconf
 
 from stoix.systems.sebulba.logging import LoggerManager
 
+
 class Stopper(abc.ABC):
     """
     A Stopper is in charge of stopping the system during training.
@@ -47,9 +48,7 @@ class LearnerStepStopper(Stopper):
     A `Stopper` that stops the system after a certain number of learner steps.
     """
 
-    def __init__(
-        self, config: omegaconf.DictConfig, logger_manager: LoggerManager
-    ):
+    def __init__(self, config: omegaconf.DictConfig, logger_manager: LoggerManager):
         self.num_steps = config.arch.num_updates
         self.logger_manager = logger_manager
 

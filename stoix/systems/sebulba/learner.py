@@ -1,4 +1,5 @@
 # Taken and modified from https://github.com/instadeepai/sebulba
+import math
 import queue
 from typing import Callable, List, Union
 
@@ -7,6 +8,7 @@ import jax
 
 from stoix.base_types import StoixState
 from stoix.systems.sebulba import core
+from stoix.systems.sebulba.logging import Hub, RecordTimeTo
 
 
 class AsyncLearner(core.StoppableComponent):
@@ -22,6 +24,7 @@ class AsyncLearner(core.StoppableComponent):
         init_state: StoixState,
         step_fn: core.LearnFn,
         key: chex.PRNGKey,
+        metrics_logger: Hub,
         on_params_change: Union[List[Callable], None] = None,
     ):
         """Creates a `Learner` component that will shard its state across the given devices. The
@@ -43,8 +46,9 @@ class AsyncLearner(core.StoppableComponent):
         self.pipeline = pipeline
         self.local_devices = local_devices
         self.state = init_state
-        self.step_fn_pmaped = step_fn,
+        self.step_fn_pmaped = (step_fn,)
         self.on_params_change = on_params_change
+        self.metrics_logger = metrics_logger
         self.rng = key
 
     def _run(self) -> None:
@@ -56,16 +60,16 @@ class AsyncLearner(core.StoppableComponent):
             except queue.Empty:
                 continue
             else:
-                # with logging.RecordTimeTo(self.metrics_logger["step_time"]):
-                self.rng, key = jax.random.split(self.rng)
-                self.state, metrics = self.step_fn_pmaped(self.state, batch, key)
+                with RecordTimeTo(self.metrics_logger["step_time"]):
+                    self.rng, key = jax.random.split(self.rng)
+                    self.state, metrics = self.step_fn_pmaped(self.state, batch, key)
 
-                # jax.tree_util.tree_map_with_path(
-                #     lambda path, value: self.metrics_logger[
-                #         f"agents/{'/'.join([p.key for p in path])}"
-                #     ].append(value[0].item()),
-                #     metrics,
-                # )
+                    jax.tree_util.tree_map_with_path(
+                        lambda path, value: self.metrics_logger[f"agents/{'/'.join([p.key for p in path])}"].append(
+                            value[0].item()
+                        ),
+                        metrics,
+                    )
 
                 if self.on_params_change is not None:
                     new_params = jax.tree_map(lambda x: x[0], self.state.params)
@@ -74,6 +78,6 @@ class AsyncLearner(core.StoppableComponent):
 
                 step += 1
 
-                # self.metrics_logger["iteration"].add(1)
-                # self.metrics_logger["steps"].add(math.prod(batch.actions.shape))
-                # self.metrics_logger["queue_size"].append(self.pipeline.qsize())
+                self.metrics_logger["iteration"].add(1)
+                self.metrics_logger["steps"].add(math.prod(batch.actions.shape))
+                self.metrics_logger["queue_size"].append(self.pipeline.qsize())

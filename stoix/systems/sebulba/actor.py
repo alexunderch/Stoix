@@ -8,6 +8,7 @@ from omegaconf import DictConfig
 
 from stoix.base_types import Action, Observation, Parameters
 from stoix.systems.sebulba import core
+from stoix.systems.sebulba.logging import Hub, RecordTimeTo
 
 
 class AsyncActor(core.StoppableComponent):
@@ -26,6 +27,7 @@ class AsyncActor(core.StoppableComponent):
         actor_fn: core.ActorFn,
         key: chex.PRNGKey,
         config: DictConfig,
+        metrics_logger: Hub,
         name: str,
     ):
         """
@@ -51,6 +53,7 @@ class AsyncActor(core.StoppableComponent):
         self.actor_fn = actor_fn
         self.rng = jax.device_put(key, actor_device)
         self.config = config
+        self.metrics_logger = metrics_logger
         self.cpu = jax.devices("cpu")[0]
 
         self.envs = env_builder(config.envs_per_actor)
@@ -81,14 +84,14 @@ class AsyncActor(core.StoppableComponent):
 
                 for _t in range(self.config.traj_len):
                     params = self.params_source.get()
-                    # with logging.RecordTimeTo(self.metrics_logger["wrapped_act_fn"]):
-                    (action, extra), (self.rng, obs) = wrapped_act_fn(params, self.rng, obs)
+                    with RecordTimeTo(self.metrics_logger["wrapped_act_fn"]):
+                        (action, extra), (self.rng, obs) = wrapped_act_fn(params, self.rng, obs)
 
-                    # with logging.RecordTimeTo(self.metrics_logger["get_cpu"]):
-                    action_cpu = np.array(jax.device_put(action, self.cpu))
+                    with RecordTimeTo(self.metrics_logger["get_cpu"]):
+                        action_cpu = np.array(jax.device_put(action, self.cpu))
 
-                    # with logging.RecordTimeTo(self.metrics_logger["env/step_time"]):
-                    next_obs, reward, terminated, truncated, info = self.envs.step(action_cpu)
+                    with RecordTimeTo(self.metrics_logger["env/step_time"]):
+                        next_obs, reward, terminated, truncated, info = self.envs.step(action_cpu)
 
                     dones = terminated | truncated
 
@@ -101,23 +104,17 @@ class AsyncActor(core.StoppableComponent):
                     traj_extras.append(extra)
                     traj_rewards.append(reward)
 
-                    # for env_idx, env_done in enumerate(dones):
-                    #     if env_done:
-                    #         self.metrics_logger["episode_return"].append(
-                    #             episode_return[env_idx]
-                    #         )
-                    #         self.metrics_logger["episode_len"].append(
-                    #             info["elapsed_step"][env_idx]
-                    #         )
-                    # self.metrics_logger["episode"].add(np.sum(dones))
+                    for env_idx, env_done in enumerate(dones):
+                        if env_done:
+                            self.metrics_logger["episode_return"].append(episode_return[env_idx])
+                            self.metrics_logger["episode_len"].append(info["elapsed_step"][env_idx])
+                    self.metrics_logger["episode"].add(np.sum(dones))
                     # Here we use terminated and not done to handle episodic_life
                     episode_return *= 1.0 - info["terminated"]
 
                     obs = next_obs
 
-                # self.metrics_logger["steps"].add(
-                #     self.config.envs_per_actor * self.config.traj_len
-                # )
+                self.metrics_logger["steps"].add(self.config.envs_per_actor * self.config.traj_len)
 
                 self.process_item(traj_obs, traj_dones, traj_actions, traj_extras, traj_rewards, obs)
 
@@ -131,5 +128,5 @@ class AsyncActor(core.StoppableComponent):
         next_obs: Observation,
     ) -> None:
         """Process a trajectory and put it in the pipeline."""
-        # with logging.RecordTimeTo(self.metrics_logger["pipeline_put_time"]):
-        self.pipeline.put(traj_obs, traj_dones, traj_actions, traj_extras, traj_rewards, next_obs)
+        with RecordTimeTo(self.metrics_logger["pipeline_put_time"]):
+            self.pipeline.put(traj_obs, traj_dones, traj_actions, traj_extras, traj_rewards, next_obs)

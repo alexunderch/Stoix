@@ -7,6 +7,7 @@ import numpy as np
 from stoix.systems.sebulba import core
 from stoix.utils.logger import LogEvent, StoixLogger
 
+
 class Counter:
     def __init__(self) -> None:
         self.value = 0
@@ -19,13 +20,9 @@ class Counter:
             "counter": float(self.value),
         }
         if len(self.queue) != 0:
-            values["irate"] = (self.value - self.queue[-1]) / (
-                now - self.flush_times[-1]
-            )
+            values["irate"] = (self.value - self.queue[-1]) / (now - self.flush_times[-1])
             if len(self.queue) == 5:
-                values["rate_5"] = (self.value - self.queue[0]) / (
-                    now - self.flush_times[0]
-                )
+                values["rate_5"] = (self.value - self.queue[0]) / (now - self.flush_times[0])
 
         self.queue.append(self.value)
         self.flush_times.append(now)
@@ -33,6 +30,7 @@ class Counter:
 
     def add(self, n: int) -> None:
         self.value += n
+
 
 class MeanBetweenFlush:
     def __init__(self) -> None:
@@ -52,6 +50,7 @@ class MeanBetweenFlush:
 
         return r
 
+
 class HubItem:
     def __init__(self, parent: Union[None, "HubItem"] = None) -> None:
         self.inner: Union[None, Counter, MeanBetweenFlush] = None
@@ -64,9 +63,7 @@ class HubItem:
             self.inner = Counter()
             self.inner.add(value)
         elif not isinstance(self.inner, Counter):
-            raise RuntimeError(
-                f"This is not a counter: {self.inner.__class__} your can't use add"
-            )
+            raise RuntimeError(f"This is not a counter: {self.inner.__class__} your can't use add")
         elif self.parent is not None:
             self.parent.add(value)
         self.inner.add(value)
@@ -77,9 +74,7 @@ class HubItem:
                 self.parent.append(value)
             self.inner = MeanBetweenFlush()
         elif not isinstance(self.inner, MeanBetweenFlush):
-            raise RuntimeError(
-                f"This is not a MeanBetweenFlush: {self.inner.__class__} your can't use append"
-            )
+            raise RuntimeError(f"This is not a MeanBetweenFlush: {self.inner.__class__} your can't use append")
         elif self.parent is not None:
             self.parent.append(value)
         self.inner.append(value)
@@ -152,7 +147,7 @@ class LoggerManager(core.StoppableComponent):
             self.flush()
             after = time.time()
             flush_time = after - before
-            self.stoix_logger.log({"flush_time" : flush_time}, self.step)
+            self.stoix_logger.log({"flush_time": flush_time}, self.step, self.step, LogEvent.MISC)
         self.stoix_logger.stop()
 
     def flush(self) -> None:
@@ -164,3 +159,15 @@ class LoggerManager(core.StoppableComponent):
         self.stoix_logger.log(values, self.step, self.step, LogEvent.MISC)
         if values:
             self.step += 1
+
+
+class RecordTimeTo:
+    def __init__(self, to: HubItem):
+        self.to = to
+
+    def __enter__(self) -> None:
+        self.start = time.monotonic()
+
+    def __exit__(self, *args: Any) -> None:
+        end = time.monotonic()
+        self.to.append(end - self.start)
