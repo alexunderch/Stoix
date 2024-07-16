@@ -9,7 +9,7 @@ from stoix.base_types import StoixState
 from stoix.systems.sebulba import core
 
 
-class Learner(core.StoppableComponent):
+class AsyncLearner(core.StoppableComponent):
     """
     `Learner` component, that retrieves trajectories from the `Pipeline` that are then used to
     carry out a learning update and updating the parameters of the `Actor`s.
@@ -19,7 +19,6 @@ class Learner(core.StoppableComponent):
         self,
         pipeline: core.Pipeline,
         local_devices: List[jax.Device],
-        global_devices: List[jax.Device],
         init_state: StoixState,
         step_fn: core.LearnFn,
         key: chex.PRNGKey,
@@ -31,7 +30,6 @@ class Learner(core.StoppableComponent):
         Args:
             pipeline: A pipeline to get trajectories from
             local_devices: local devices to use for learner
-            global_devices: global devices that are part of the learning
             init_state: the initial state of the algorithm
             step_fn: the function to pmap that define the learning
             key: A PRNGKey for the jax computations
@@ -44,14 +42,8 @@ class Learner(core.StoppableComponent):
         super().__init__(name="Learner")
         self.pipeline = pipeline
         self.local_devices = local_devices
-        self.global_devices = global_devices
-        self.state = jax.device_put_replicated(init_state, self.local_devices)
-        self.step_fn_pmaped = jax.pmap(
-            step_fn,
-            "batch",
-            devices=global_devices,
-            in_axes=(0, 0, None),  # type: ignore
-        )
+        self.state = init_state
+        self.step_fn_pmaped = step_fn,
         self.on_params_change = on_params_change
         self.rng = key
 

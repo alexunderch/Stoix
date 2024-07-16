@@ -10,7 +10,7 @@ from stoix.base_types import Action, Observation, Parameters
 from stoix.systems.sebulba import core
 
 
-class Actor(core.StoppableComponent):
+class AsyncActor(core.StoppableComponent):
     """Actor Component that generates trajectories by passing a batch of actions
     to our batched environment, which then outputs the corresponding observations. These
     are then used to form trajectories that are placed in our pipeline to be feed to our
