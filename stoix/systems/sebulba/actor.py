@@ -96,7 +96,7 @@ class AsyncActor(core.StoppableComponent):
                     dones = terminated | truncated
 
                     # Here we use the reward in info because this one is not clipped
-                    episode_return += info["reward"]
+                    episode_return += reward
 
                     traj_obs.append(obs)
                     traj_dones.append(dones)
@@ -110,7 +110,7 @@ class AsyncActor(core.StoppableComponent):
                             self.metrics_logger["episode_len"].append(info["elapsed_step"][env_idx])
                     self.metrics_logger["episode"].add(np.sum(dones))
                     # Here we use terminated and not done to handle episodic_life
-                    episode_return *= 1.0 - info["terminated"]
+                    episode_return *= 1.0 - dones
 
                     obs = next_obs
 

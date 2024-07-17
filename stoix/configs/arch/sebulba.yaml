@@ -20,7 +20,7 @@ absolute_metric: True # Whether the absolute metric should be computed. For more
 actor:
   device_ids: [0, 1]
   actor_per_device: 4
-  envs_per_actor: 3
+  envs_per_actor: 32
   traj_len: ${system.rollout_length}
 
 

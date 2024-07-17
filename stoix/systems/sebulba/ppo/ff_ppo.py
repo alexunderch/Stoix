@@ -82,10 +82,10 @@ def get_learner_fn(
     actor_apply_fn, critic_apply_fn = apply_fns
     actor_update_fn, critic_update_fn = update_fns
 
-    def _update_step(learner_state: CoreLearnerState, traj_batch: PPOTransition) -> Tuple[CoreLearnerState, Tuple]:
+    def _update_step(learner_state: CoreLearnerState, traj_batch: PPOTransition, key) -> Tuple[CoreLearnerState, Tuple]:
 
         # CALCULATE ADVANTAGE
-        params, opt_states, key = learner_state
+        params, opt_states, _ = learner_state
 
         r_t = traj_batch.reward
         v_t = traj_batch.value
@@ -187,7 +187,7 @@ def get_learner_fn(
             key, shuffle_key = jax.random.split(key)
 
             # SHUFFLE MINIBATCHES
-            batch_size = config.system.rollout_length * config.arch.num_envs
+            batch_size = config.system.rollout_length * (config.arch.actor.envs_per_actor//len(config.arch.learner.device_ids))
             permutation = jax.random.permutation(shuffle_key, batch_size)
             batch = (traj_batch, advantages, targets)
             batch = jax.tree_util.tree_map(lambda x: merge_leading_dims(x, 2), batch)
@@ -201,6 +201,7 @@ def get_learner_fn(
             (params, opt_states), loss_info = jax.lax.scan(_update_minibatch, (params, opt_states), minibatches)
 
             update_state = (params, opt_states, traj_batch, advantages, targets, key)
+            
             return update_state, loss_info
 
         update_state = (params, opt_states, traj_batch, advantages, targets, key)
@@ -213,9 +214,24 @@ def get_learner_fn(
 
         return learner_state, loss_info
 
-    def learner_fn(learner_state: CoreLearnerState, traj_batch: PPOTransition) -> ExperimentOutput[CoreLearnerState]:
-
-        learner_state, loss_info = _update_step(learner_state, traj_batch)
+    def learner_fn(learner_state: CoreLearnerState, traj_batch: core.Trajectory, key) -> ExperimentOutput[CoreLearnerState]:
+        
+        traj_batch = PPOTransition(
+            done=traj_batch.dones[:-1],
+            obs=traj_batch.obs[:-1],
+            action=traj_batch.actions[:-1],
+            reward=traj_batch.rewards[:-1],
+            value=traj_batch.extras["values"],
+            log_prob=traj_batch.extras["logprobs"][:-1],
+            truncated=traj_batch.dones[:-1],
+            info=traj_batch.extras,
+        )
+        learner_state, loss_info = _update_step(learner_state, traj_batch, key)
+        
+        def mean_all(x: jax.Array) -> jax.Array:
+            return jax.lax.pmean(jnp.mean(x), axis_name="device")
+            
+        loss_info = jax.tree_util.tree_map(lambda x: mean_all(x), loss_info)
 
         return learner_state, loss_info
 
@@ -259,8 +275,6 @@ def learner_setup(keys: chex.Array, config: DictConfig) -> Tuple[LearnerFn[CoreL
     init_x = jnp.ones(config.obs_shape)
     init_x = jax.tree_util.tree_map(lambda x: x[None, ...], init_x)
 
-    print(init_x.shape, "is the shape of the initial observation")
-
     # Initialise actor params and optimiser state.
     actor_params = actor_network.init(actor_net_key, init_x)
     actor_opt_state = actor_optim.init(actor_params)
@@ -279,9 +293,7 @@ def learner_setup(keys: chex.Array, config: DictConfig) -> Tuple[LearnerFn[CoreL
     apply_fns = (actor_network_apply_fn, critic_network_apply_fn)
     update_fns = (actor_optim.update, critic_optim.update)
 
-    # Get batched iterated update and replicate it to pmap it over cores.
     learn = get_learner_fn(apply_fns, update_fns, config)
-    learn = jax.pmap(learn, axis_name="device")
 
     # Load model from checkpoint if specified.
     if config.logger.checkpointing.load_model:
@@ -299,13 +311,7 @@ def learner_setup(keys: chex.Array, config: DictConfig) -> Tuple[LearnerFn[CoreL
     step_keys = jax.random.split(step_key, n_devices)
     step_keys = jnp.stack(step_keys)
     opt_states = ActorCriticOptStates(actor_opt_state, critic_opt_state)
-    replicate_learner = (params, opt_states)
-
-    # Duplicate learner across devices.
-    replicate_learner = flax.jax_utils.replicate(replicate_learner, devices=jax.devices())
-
     # Initialise learner state.
-    params, opt_states = replicate_learner
     init_learner_state = CoreLearnerState(params, opt_states, step_keys)
 
     return learn, actor_network, critic_network, init_learner_state
@@ -347,12 +353,11 @@ def run_experiment(_config: DictConfig) -> float:
     cfg["arch"]["devices"] = jax.devices()
     pprint(cfg)
 
-    logger_manager = LoggerManager(logger)
-    logger_manager.start()
+    global_logger_manager = LoggerManager(logger)
+    global_logger_manager.start()
 
     def actor_fn(params: Parameters, obs: chex.Array, key: chex.PRNGKey) -> Tuple[chex.Array, Any]:
         """Actor function."""
-        print(obs.shape)
         pi = actor_network.apply(params.actor_params, obs)
         action = pi.sample(seed=key)
         logprob = pi.log_prob(action)
@@ -369,7 +374,7 @@ def run_experiment(_config: DictConfig) -> float:
     env_factory = EnvPoolFactory(
         config.arch.seed,
         task_id=config.env.scenario.name,
-        env_type="gym",
+        env_type="gymnasium",
         **config.env.kwargs,
     )
 
@@ -381,6 +386,7 @@ def run_experiment(_config: DictConfig) -> float:
 
     actors = []
     params_sources = []
+    actors_loggers = global_logger_manager["actors"]
     for actor_device in actor_devices:
         # Create 1 params source per actor device
         params_source = core.ParamsSource(learner_state.params, actor_device)
@@ -398,11 +404,12 @@ def run_experiment(_config: DictConfig) -> float:
                 actor_fn,
                 key,
                 config.arch.actor,
-                logger_manager,
+                actors_loggers,
                 f"{actor_device.id}-{i}",
             )
             actors.append(actor)
 
+    learner_loggers = global_logger_manager["learner"]
     # Create Learner
     learner = AsyncLearner(
         pipeline,
@@ -410,7 +417,7 @@ def run_experiment(_config: DictConfig) -> float:
         learner_state,
         learn,
         learner_key,
-        logger_manager,
+        learner_loggers,
         on_params_change=[params_source.update for params_source in params_sources],
     )
 
@@ -421,7 +428,7 @@ def run_experiment(_config: DictConfig) -> float:
 
     try:
         # Create our stopper and wait for it to stop
-        stopper = LearnerStepStopper(config, logger_manager=logger_manager)
+        stopper = LearnerStepStopper(config, logger_manager=global_logger_manager)
         stopper.wait()
     finally:
         print(f"{Fore.RED}{Style.BRIGHT}Shutting down{Style.RESET_ALL}")
@@ -442,10 +449,10 @@ def run_experiment(_config: DictConfig) -> float:
             learner.join()
             pipeline.stop()
             pipeline.join()
-            logger_manager.stop()
+            global_logger_manager.stop()
             for params_source in params_sources:
                 params_source.join()
-            logger_manager.join()
+            global_logger_manager.join()
 
         graceful_thread = threading.Thread(target=graceful_shutdown, daemon=True)
         graceful_thread.start()

@@ -5,6 +5,7 @@ from typing import Callable, List, Union
 
 import chex
 import jax
+import jax.numpy as jnp
 
 from stoix.base_types import StoixState
 from stoix.systems.sebulba import core
@@ -45,8 +46,8 @@ class AsyncLearner(core.StoppableComponent):
         super().__init__(name="Learner")
         self.pipeline = pipeline
         self.local_devices = local_devices
-        self.state = init_state
-        self.step_fn_pmaped = (step_fn,)
+        self.state = jax.device_put_replicated(init_state, self.local_devices)
+        self.step_fn_pmaped = jax.pmap(step_fn, axis_name="device", in_axes=(0,0, None))
         self.on_params_change = on_params_change
         self.metrics_logger = metrics_logger
         self.rng = key
@@ -63,13 +64,15 @@ class AsyncLearner(core.StoppableComponent):
                 with RecordTimeTo(self.metrics_logger["step_time"]):
                     self.rng, key = jax.random.split(self.rng)
                     self.state, metrics = self.step_fn_pmaped(self.state, batch, key)
-
-                    jax.tree_util.tree_map_with_path(
-                        lambda path, value: self.metrics_logger[f"agents/{'/'.join([p.key for p in path])}"].append(
-                            value[0].item()
-                        ),
-                        metrics,
-                    )
+                    
+                    print(metrics)
+            
+                    # jax.tree_util.tree_map_with_path(
+                    #     lambda path, value: self.metrics_logger[f"agents/{'/'.join([p.key for p in path])}"].append(
+                    #         value[0].item()
+                    #     ),
+                    #     metrics,
+                    # )
 
                 if self.on_params_change is not None:
                     new_params = jax.tree_map(lambda x: x[0], self.state.params)
