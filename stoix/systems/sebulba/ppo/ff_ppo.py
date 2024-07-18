@@ -35,7 +35,7 @@ from stoix.systems.sebulba import core
 from stoix.systems.sebulba.actor import AsyncActor
 from stoix.systems.sebulba.learner import AsyncLearner
 from stoix.systems.sebulba.logging import LoggerManager
-from stoix.systems.sebulba.stoppers import LearnerStepStopper, Stopper
+from stoix.systems.sebulba.stoppers import ActorStepStopper, LearnerStepStopper, Stopper
 from stoix.utils import make_env as environments
 from stoix.utils.checkpointing import Checkpointer
 from stoix.utils.env_pool import EnvPoolFactory
@@ -187,7 +187,9 @@ def get_learner_fn(
             key, shuffle_key = jax.random.split(key)
 
             # SHUFFLE MINIBATCHES
-            batch_size = config.system.rollout_length * (config.arch.actor.envs_per_actor//len(config.arch.learner.device_ids))
+            batch_size = config.system.rollout_length * (
+                config.arch.actor.envs_per_actor // len(config.arch.learner.device_ids)
+            )
             permutation = jax.random.permutation(shuffle_key, batch_size)
             batch = (traj_batch, advantages, targets)
             batch = jax.tree_util.tree_map(lambda x: merge_leading_dims(x, 2), batch)
@@ -201,7 +203,7 @@ def get_learner_fn(
             (params, opt_states), loss_info = jax.lax.scan(_update_minibatch, (params, opt_states), minibatches)
 
             update_state = (params, opt_states, traj_batch, advantages, targets, key)
-            
+
             return update_state, loss_info
 
         update_state = (params, opt_states, traj_batch, advantages, targets, key)
@@ -214,11 +216,13 @@ def get_learner_fn(
 
         return learner_state, loss_info
 
-    def learner_fn(learner_state: CoreLearnerState, traj_batch: core.Trajectory, key) -> ExperimentOutput[CoreLearnerState]:
-        
+    def learner_fn(
+        learner_state: CoreLearnerState, traj_batch: core.Trajectory, key
+    ) -> ExperimentOutput[CoreLearnerState]:
+
         values = traj_batch.extras["values"]
         bootstrap_value = critic_apply_fn(learner_state.params.critic_params, traj_batch.next_obs)
-        values = jnp.concatenate([values, bootstrap_value[jnp.newaxis,...]], axis=0)
+        values = jnp.concatenate([values, bootstrap_value[jnp.newaxis, ...]], axis=0)
         traj_batch = PPOTransition(
             done=traj_batch.dones,
             obs=traj_batch.obs,
@@ -230,10 +234,10 @@ def get_learner_fn(
             info=traj_batch.extras,
         )
         learner_state, loss_info = _update_step(learner_state, traj_batch, key)
-        
+
         def mean_all(x: jax.Array) -> jax.Array:
             return jax.lax.pmean(jnp.mean(x), axis_name="device")
-            
+
         loss_info = jax.tree_util.tree_map(lambda x: mean_all(x), loss_info)
 
         return learner_state, loss_info
@@ -372,14 +376,8 @@ def run_experiment(_config: DictConfig) -> float:
 
         return action, extras
 
-    # Create the environments for train and eval.
-    # Create environments factory, uses the same setup as seen in CleanRL
-    env_factory = EnvPoolFactory(
-        config.arch.seed,
-        task_id=config.env.scenario.name,
-        env_type="gymnasium",
-        **config.env.kwargs,
-    )
+    # Create environments factory
+    env_factory = environments.make_envpool_factory(config)
 
     # build Pipeline to pass trajectories between Actor's and Learner
     pipeline = core.Pipeline(max_size=5, learner_devices=local_learner_devices)
@@ -406,7 +404,7 @@ def run_experiment(_config: DictConfig) -> float:
                 pipeline,
                 actor_fn,
                 key,
-                config.arch.actor,
+                config,
                 actors_loggers,
                 f"{actor_device.id}-{i}",
             )
@@ -431,7 +429,7 @@ def run_experiment(_config: DictConfig) -> float:
 
     try:
         # Create our stopper and wait for it to stop
-        stopper = LearnerStepStopper(config, logger_manager=global_logger_manager)
+        stopper = ActorStepStopper(config, logger_manager=global_logger_manager)
         stopper.wait()
     finally:
         print(f"{Fore.RED}{Style.BRIGHT}Shutting down{Style.RESET_ALL}")
@@ -448,10 +446,11 @@ def run_experiment(_config: DictConfig) -> float:
                 actor.join()
 
             learner.stop()
-
             learner.join()
+
             pipeline.stop()
             pipeline.join()
+
             global_logger_manager.stop()
             for params_source in params_sources:
                 params_source.join()

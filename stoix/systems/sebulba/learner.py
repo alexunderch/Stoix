@@ -10,6 +10,7 @@ import jax.numpy as jnp
 from stoix.base_types import StoixState
 from stoix.systems.sebulba import core
 from stoix.systems.sebulba.logging import Hub, RecordTimeTo
+from stoix.utils.jax_utils import unreplicate_batch_dim, unreplicate_device_dim
 
 
 class AsyncLearner(core.StoppableComponent):
@@ -47,7 +48,7 @@ class AsyncLearner(core.StoppableComponent):
         self.pipeline = pipeline
         self.local_devices = local_devices
         self.state = jax.device_put_replicated(init_state, self.local_devices)
-        self.step_fn_pmaped = jax.pmap(step_fn, axis_name="device", in_axes=(0,0, None))
+        self.step_fn_pmaped = jax.pmap(step_fn, axis_name="device", in_axes=(0, 0, None))
         self.on_params_change = on_params_change
         self.metrics_logger = metrics_logger
         self.rng = key
@@ -64,16 +65,16 @@ class AsyncLearner(core.StoppableComponent):
                 with RecordTimeTo(self.metrics_logger["step_time"]):
                     self.rng, key = jax.random.split(self.rng)
                     self.state, metrics = self.step_fn_pmaped(self.state, batch, key)
-            
+
                     jax.tree_util.tree_map_with_path(
-                        lambda path, value: self.metrics_logger[f"agents/{'/'.join([p.key for p in path])}"].append(
+                        lambda path, value: self.metrics_logger[f"{'_'.join([p.key for p in path])}"].append(
                             value[0].item()
                         ),
                         metrics,
                     )
 
                 if self.on_params_change is not None:
-                    new_params = jax.tree_map(lambda x: x[0], self.state.params)
+                    new_params = unreplicate_device_dim(self.state.params)
                     for handler in self.on_params_change:
                         handler(new_params)
 

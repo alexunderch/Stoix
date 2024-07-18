@@ -48,6 +48,15 @@ def unreplicate_n_dims(x: chex.ArrayTree, unreplicate_depth: int = 2) -> chex.Ar
     return jax.tree_util.tree_map(lambda x: x[(0,) * unreplicate_depth], x)  # type: ignore
 
 
+def unreplicate_device_dim(x: chex.ArrayTree) -> chex.ArrayTree:
+    """Unreplicated just the device dimension.
+
+    In stoix's case it is always the first dimension.
+    We simply take element 0 as the params are identical across this dimension.
+    """
+    return unreplicate_n_dims(x, unreplicate_depth=1)
+
+
 def unreplicate_batch_dim(x: chex.ArrayTree) -> chex.ArrayTree:
     """Unreplicated just the update batch dimension.
     (The dimension that is vmapped over when acting and learning)

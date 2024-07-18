@@ -62,3 +62,24 @@ class LearnerStepStopper(Stopper):
             if current_value is not None and current_value > self.num_steps:
                 return
             time.sleep(1)
+
+
+class ActorStepStopper(Stopper):
+    """
+    A `Stopper` that stops the system after a certain number of environment steps.
+    """
+
+    def __init__(self, config: omegaconf.DictConfig, logger_manager: LoggerManager):
+        self.total_timesteps = config.arch.total_timesteps
+        self.logger_manager = logger_manager
+
+    def get_current_value(self) -> Union[None, float]:
+        current_value = self.logger_manager["actor"]["steps"]
+        return None if current_value.inner is None else current_value.inner.value  # type: ignore
+
+    def wait(self) -> None:
+        while True:
+            current_value = self.get_current_value()
+            if current_value is not None and current_value > self.total_timesteps:
+                return
+            time.sleep(1)

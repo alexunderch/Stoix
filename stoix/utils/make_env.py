@@ -25,6 +25,7 @@ from popjym.registration import REGISTERED_ENVS as POPJYM_REGISTRY
 from xminigrid.registration import _REGISTRY as XMINIGRID_REGISTRY
 
 from stoix.utils.debug_env import IdentityGame, SequenceGame
+from stoix.utils.env_pool import EnvPoolFactory
 from stoix.wrappers import GymnaxWrapper, JumanjiWrapper, RecordEpisodeMetrics
 from stoix.wrappers.brax import BraxJumanjiWrapper
 from stoix.wrappers.jaxmarl import JaxMarlWrapper, MabraxWrapper, SmaxWrapper
@@ -369,9 +370,21 @@ def make_navix_env(env_name: str, config: DictConfig) -> Tuple[Environment, Envi
     return env, eval_env
 
 
+def make_envpool_factory(config: DictConfig) -> EnvPoolFactory:
+    """Create an EnvPoolFactory for Sebulba Systems."""
+    env_name = config.env.scenario.name
+    env_factory = EnvPoolFactory(
+        config.arch.seed,
+        task_id=env_name,
+        env_type="gymnasium",
+        **config.env.kwargs,
+    )
+    return env_factory
+
+
 def make(config: DictConfig) -> Tuple[Environment, Environment]:
     """
-    Create environments for training and evaluation..
+    Create environments for training and evaluation.
 
     Args:
         config (Dict): The configuration of the environment.

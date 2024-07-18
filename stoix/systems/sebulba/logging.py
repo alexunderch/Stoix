@@ -118,12 +118,12 @@ class Hub:
         for name in names:
             logger = self.loggers[name]
             for name2, value in logger.flush().items():
-                values[f"{self.name}/{name}/{name2}"] = value
+                values[f"{self.name}_{name}_{name2}"] = value
         return values
 
 
 class LoggerManager(core.StoppableComponent):
-    def __init__(self, stoix_logger: StoixLogger, logger_flush_dt: float = 0.5) -> None:
+    def __init__(self, stoix_logger: StoixLogger, logger_flush_dt: float = 1.5) -> None:
         super(LoggerManager, self).__init__()
         self.stoix_logger = stoix_logger
         self.logger_flush_dt = logger_flush_dt
@@ -164,8 +164,10 @@ class LoggerManager(core.StoppableComponent):
             else:
                 misc_values.update(logger.flush())
         if actor_values:
+            actor_values = {f"{k[7:]}": v for k, v in actor_values.items()}
             self.stoix_logger.log(actor_values, self.step, self.step, LogEvent.ACT)
         if learner_values:
+            learner_values = {f"{k[8:]}": v for k, v in learner_values.items()}
             self.stoix_logger.log(learner_values, self.step, self.step, LogEvent.TRAIN)
         if misc_values:
             self.stoix_logger.log(misc_values, self.step, self.step, LogEvent.MISC)

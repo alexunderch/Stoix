@@ -50,27 +50,18 @@ class AsyncActor(core.StoppableComponent):
         self.actor_device = actor_device
         self.pipeline = pipeline
         self.params_source = params_source
-        self.actor_fn = actor_fn
+        self.actor_fn = jax.jit(actor_fn)
         self.rng = jax.device_put(key, actor_device)
         self.config = config
         self.metrics_logger = metrics_logger
         self.cpu = jax.devices("cpu")[0]
+        self.split_key_fn = jax.jit(jax.random.split)
 
-        self.envs = env_builder(config.envs_per_actor)
+        self.envs = env_builder(self.config.arch.actor.envs_per_actor)
 
     def _run(self) -> None:
-        episode_return = np.zeros((self.config.envs_per_actor,))
+        episode_return = np.zeros((self.config.arch.actor.envs_per_actor,))
         with jax.default_device(self.actor_device):
-
-            @jax.jit
-            def wrapped_act_fn(
-                params: Parameters,
-                key: chex.PRNGKey,
-                next_obs: Observation,
-            ) -> Tuple[Tuple[Action, Any], chex.PRNGKey]:
-                key, next_key = jax.random.split(key)
-                action, extra = self.actor_fn(params, next_obs, key)
-                return (action, extra), (next_key, next_obs)
 
             obs, _ = self.envs.reset()
             obs = jax.device_put(obs, self.actor_device)
@@ -82,15 +73,16 @@ class AsyncActor(core.StoppableComponent):
                 traj_extras = []
                 traj_rewards = []
 
-                for _t in range(self.config.traj_len):
+                for _t in range(self.config.system.rollout_length):
                     params = self.params_source.get()
-                    with RecordTimeTo(self.metrics_logger["wrapped_act_fn"]):
-                        (action, extra), (self.rng, obs) = wrapped_act_fn(params, self.rng, obs)
+                    with RecordTimeTo(self.metrics_logger["compute_action"]):
+                        self.rng, key = self.split_key_fn(self.rng)
+                        action, extra = self.actor_fn(params, obs, key)
 
-                    with RecordTimeTo(self.metrics_logger["get_cpu"]):
+                    with RecordTimeTo(self.metrics_logger["put_action_on_cpu"]):
                         action_cpu = np.array(jax.device_put(action, self.cpu))
 
-                    with RecordTimeTo(self.metrics_logger["env/step_time"]):
+                    with RecordTimeTo(self.metrics_logger["env_step_time"]):
                         next_obs, reward, terminated, truncated, info = self.envs.step(action_cpu)
 
                     dones = terminated | truncated
@@ -114,7 +106,9 @@ class AsyncActor(core.StoppableComponent):
 
                     obs = next_obs
 
-                self.metrics_logger["steps"].add(self.config.envs_per_actor * self.config.traj_len)
+                self.metrics_logger["steps"].add(
+                    self.config.arch.actor.envs_per_actor * self.config.system.rollout_length
+                )
 
                 self.process_item(traj_obs, traj_dones, traj_actions, traj_extras, traj_rewards, obs)
 
