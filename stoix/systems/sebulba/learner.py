@@ -64,15 +64,13 @@ class AsyncLearner(core.StoppableComponent):
                 with RecordTimeTo(self.metrics_logger["step_time"]):
                     self.rng, key = jax.random.split(self.rng)
                     self.state, metrics = self.step_fn_pmaped(self.state, batch, key)
-                    
-                    print(metrics)
             
-                    # jax.tree_util.tree_map_with_path(
-                    #     lambda path, value: self.metrics_logger[f"agents/{'/'.join([p.key for p in path])}"].append(
-                    #         value[0].item()
-                    #     ),
-                    #     metrics,
-                    # )
+                    jax.tree_util.tree_map_with_path(
+                        lambda path, value: self.metrics_logger[f"agents/{'/'.join([p.key for p in path])}"].append(
+                            value[0].item()
+                        ),
+                        metrics,
+                    )
 
                 if self.on_params_change is not None:
                     new_params = jax.tree_map(lambda x: x[0], self.state.params)

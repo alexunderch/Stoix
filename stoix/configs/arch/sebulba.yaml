@@ -3,9 +3,9 @@
 # --- Training ---
 seed: 42  # RNG seed.
 total_num_envs: 1024  # Total Number of vectorised environments across all actors. Needs to be divisible by the number of actors.
-total_timesteps: 1e7 # Set the total environment steps.
+total_timesteps: ~ # Set the total environment steps.
 # If unspecified, it's derived from num_updates; otherwise, num_updates adjusts based on this value.
-num_updates: ~ # Number of updates
+num_updates: 500_000 # Number of updates
 
 # --- Evaluation ---
 evaluation_greedy: False # Evaluate the policy greedily. If True the policy will select

@@ -112,7 +112,7 @@ class Hub:
         self.loggers[key] = logger
         return logger
 
-    def flush(self, details_level: int) -> Dict[str, float]:
+    def flush(self) -> Dict[str, float]:
         values = {}
         names = list(self.loggers.keys())
         for name in names:
@@ -147,17 +147,29 @@ class LoggerManager(core.StoppableComponent):
             self.flush()
             after = time.time()
             flush_time = after - before
-            self.stoix_logger.log({"flush_time": flush_time}, self.step, self.step, LogEvent.MISC)
+            # self.stoix_logger.log({"flush_time": flush_time}, self.step, self.step, LogEvent.MISC)
         self.stoix_logger.stop()
 
     def flush(self) -> None:
-        values = {}
+        actor_values = {}
+        learner_values = {}
+        misc_values = {}
         names = list(self.loggers.keys())
         for name in names:
             logger = self.loggers[name]
-            values.update(logger.flush(0))
-        self.stoix_logger.log(values, self.step, self.step, LogEvent.MISC)
-        if values:
+            if "actors" in name:
+                actor_values.update(logger.flush())
+            elif "learner" in name:
+                learner_values.update(logger.flush())
+            else:
+                misc_values.update(logger.flush())
+        if actor_values:
+            self.stoix_logger.log(actor_values, self.step, self.step, LogEvent.ACT)
+        if learner_values:
+            self.stoix_logger.log(learner_values, self.step, self.step, LogEvent.TRAIN)
+        if misc_values:
+            self.stoix_logger.log(misc_values, self.step, self.step, LogEvent.MISC)
+        if actor_values or learner_values or misc_values:
             self.step += 1
 
 
