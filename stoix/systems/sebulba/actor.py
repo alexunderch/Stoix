@@ -69,57 +69,62 @@ class AsyncActor(core.StoppableComponent):
 
             while not self.should_stop:
                 traj_obs = []
-                traj_dones = []
+                traj_term = []
+                traj_trunc = []
                 traj_actions = []
                 traj_extras = []
                 traj_rewards = []
 
                 for _t in range(self.config.system.rollout_length):
                     params = self.params_source.get()
-                    with RecordTimeTo(self.metrics_hub["compute_action"]):
+                    with RecordTimeTo(self.metrics_hub["compute_action_time"]):
                         self.rng, key = self.split_key_fn(self.rng)
                         action, extra = self.actor_fn(params, obs, key)
 
-                    with RecordTimeTo(self.metrics_hub["put_action_on_cpu"]):
+                    with RecordTimeTo(self.metrics_hub["put_action_on_cpu_time"]):
                         action_cpu = np.array(jax.device_put(action, self.cpu))
 
                     with RecordTimeTo(self.metrics_hub["env_step_time"]):
                         next_obs, reward, terminated, truncated, info = self.envs.step(action_cpu)
 
-                    dones = terminated | truncated
-
-                    # Here we use the reward in info because this one is not clipped
                     episode_return += reward
 
                     traj_obs.append(obs)
-                    traj_dones.append(dones)
+                    traj_term.append(terminated)
+                    traj_trunc.append(truncated)
                     traj_actions.append(action)
                     traj_extras.append(extra)
                     traj_rewards.append(reward)
 
+                    dones = terminated | truncated
                     for env_idx, env_done in enumerate(dones):
                         if env_done:
                             self.metrics_hub["episode_return"].append(episode_return[env_idx])
                             self.metrics_hub["episode_length"].append(info["elapsed_step"][env_idx])
                     self.metrics_hub["number_of_episodes"].add(np.sum(dones))
-                    # Here we use terminated and not done to handle episodic_life
+                    # Reset the episode return when the episode is done
                     episode_return *= 1.0 - dones
-
+                    # Set the new observation
                     obs = next_obs
 
+                # Log the number of steps
                 self.metrics_hub["steps"].add(self.config.arch.actor.envs_per_actor * self.config.system.rollout_length)
-
-                self.process_item(traj_obs, traj_dones, traj_actions, traj_extras, traj_rewards, obs)
+                # Send rollout to pipeline
+                self.process_item(traj_obs, traj_term, traj_trunc, traj_actions, traj_extras, traj_rewards, obs)
 
     def process_item(
         self,
         traj_obs: Sequence[Observation],
-        traj_dones: Sequence[jax.Array],
+        traj_term: Sequence[jax.Array],
+        traj_trunc: Sequence[jax.Array],
         traj_actions: Sequence[jax.Array],
         traj_extras: Sequence[jax.Array],
         traj_rewards: Sequence[jax.Array],
         next_obs: Observation,
     ) -> None:
-        """Process a trajectory and put it in the pipeline."""
+        """Process a trajectory and put it in the pipeline.
+        All data here is a list of data in the shape (rollout_length, envs_per_actor, ...)
+        except for next_obs which is in the shape (envs_per_actor, ...).
+        """
         with RecordTimeTo(self.metrics_hub["pipeline_put_time"]):
-            self.pipeline.put(traj_obs, traj_dones, traj_actions, traj_extras, traj_rewards, next_obs)
+            self.pipeline.put(traj_obs, traj_term, traj_trunc, traj_actions, traj_extras, traj_rewards, next_obs)
