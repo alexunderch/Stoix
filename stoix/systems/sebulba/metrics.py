@@ -33,12 +33,12 @@ class Scalar(Metric):
     def flush(self) -> Dict[str, float]:
         now = time.time()
         values = {
-            "scalar": float(self.value),
+            "": float(self.value),
         }
         if len(self.queue) != 0:
-            values["rate"] = (self.value - self.queue[-1]) / (now - self.flush_times[-1])
+            values["per_second"] = (self.value - self.queue[-1]) / (now - self.flush_times[-1])
             if len(self.queue) == 5:
-                values["avg_rate"] = (self.value - self.queue[0]) / (now - self.flush_times[0])
+                values["avg_per_second"] = (self.value - self.queue[0]) / (now - self.flush_times[0])
 
         self.queue.append(self.value)
         self.flush_times.append(now)
@@ -184,15 +184,15 @@ class LoggerManager(core.StoppableComponent):
         actor_values = {}
         learner_values = {}
         misc_values = {}
-        names = list(self.loggers.keys())
+        names = list(self.metric_hubs.keys())
         for name in names:
-            logger = self.loggers[name]
+            metric_hub = self.metric_hubs[name]
             if "actors" in name:
-                actor_values.update(logger.flush())
+                actor_values.update(metric_hub.flush())
             elif "learner" in name:
-                learner_values.update(logger.flush())
+                learner_values.update(metric_hub.flush())
             else:
-                misc_values.update(logger.flush())
+                misc_values.update(metric_hub.flush())
         if actor_values:
             actor_values = {f"{k[7:]}": v for k, v in actor_values.items()}
             self.stoix_logger.log(actor_values, self.step, self.step, LogEvent.ACT)

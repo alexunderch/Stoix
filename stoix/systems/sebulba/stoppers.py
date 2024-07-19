@@ -18,7 +18,7 @@ from typing import Any, Union
 
 import omegaconf
 
-from stoix.systems.sebulba.logging import LoggerManager
+from stoix.systems.sebulba.metrics import LoggerManager
 
 
 class Stopper(abc.ABC):
@@ -53,7 +53,7 @@ class LearnerStepStopper(Stopper):
         self.logger_manager = logger_manager
 
     def get_current_value(self) -> Union[None, float]:
-        current_value = self.logger_manager["learner"]["steps"]
+        current_value = self.logger_manager["learner"]["learner_iterations"]
         return None if current_value.inner is None else current_value.inner.value  # type: ignore
 
     def wait(self) -> None:

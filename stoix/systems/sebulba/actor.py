@@ -100,8 +100,8 @@ class AsyncActor(core.StoppableComponent):
                     for env_idx, env_done in enumerate(dones):
                         if env_done:
                             self.metrics_hub["episode_return"].append(episode_return[env_idx])
-                            self.metrics_hub["episode_len"].append(info["elapsed_step"][env_idx])
-                    self.metrics_hub["episode"].add(np.sum(dones))
+                            self.metrics_hub["episode_length"].append(info["elapsed_step"][env_idx])
+                    self.metrics_hub["number_of_episodes"].add(np.sum(dones))
                     # Here we use terminated and not done to handle episodic_life
                     episode_return *= 1.0 - dones
 

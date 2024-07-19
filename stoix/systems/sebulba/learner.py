@@ -61,7 +61,7 @@ class AsyncLearner(core.StoppableComponent):
             except queue.Empty:
                 continue
             else:
-                with RecordTimeTo(self.metrics_hub["step_time"]):
+                with RecordTimeTo(self.metrics_hub["learner_step_time"]):
                     self.rng, key = jax.random.split(self.rng)
                     self.state, metrics = self.step_fn_pmaped(self.state, batch, key)
 
@@ -79,6 +79,5 @@ class AsyncLearner(core.StoppableComponent):
 
                 step += 1
 
-                self.metrics_hub["iteration"].add(1)
-                self.metrics_hub["steps"].add(math.prod(batch.actions.shape))
-                self.metrics_hub["queue_size"].append(self.pipeline.qsize())
+                self.metrics_hub["learner_iterations"].add(1)
+                self.metrics_hub["pipeline_queue_size"].append(self.pipeline.qsize())
