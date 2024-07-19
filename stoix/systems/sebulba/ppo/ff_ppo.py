@@ -1,11 +1,9 @@
 import copy
 import threading
-import time
 from typing import Any, Dict, NamedTuple, Tuple
 
 import chex
 import envpool
-import flax
 import hydra
 import jax
 import jax.numpy as jnp
@@ -13,7 +11,6 @@ import omegaconf
 import optax
 from colorama import Fore, Style
 from flax.core.frozen_dict import FrozenDict
-from jumanji.env import Environment
 from omegaconf import DictConfig, OmegaConf
 from rich.pretty import pprint
 
@@ -34,7 +31,7 @@ from stoix.systems.anakin.ppo.ppo_types import PPOTransition
 from stoix.systems.sebulba import core
 from stoix.systems.sebulba.actor import AsyncActor
 from stoix.systems.sebulba.learner import AsyncLearner
-from stoix.systems.sebulba.logging import LoggerManager
+from stoix.systems.sebulba.metrics import LoggerManager
 from stoix.systems.sebulba.stoppers import ActorStepStopper, LearnerStepStopper, Stopper
 from stoix.utils import make_env as environments
 from stoix.utils.checkpointing import Checkpointer
