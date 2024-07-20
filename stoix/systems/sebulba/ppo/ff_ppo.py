@@ -216,14 +216,15 @@ def get_learner_fn(
         values = traj_batch.extras["values"]
         bootstrap_value = critic_apply_fn(learner_state.params.critic_params, traj_batch.next_obs)
         values = jnp.concatenate([values, bootstrap_value[jnp.newaxis, ...]], axis=0)
+
         traj_batch = PPOTransition(
-            done=traj_batch.dones,
+            done=traj_batch.done,
             obs=traj_batch.obs,
-            action=traj_batch.actions,
-            reward=traj_batch.rewards,
+            action=traj_batch.action,
+            reward=traj_batch.reward,
             value=values,
-            log_prob=traj_batch.extras["logprobs"],
-            truncated=traj_batch.dones,
+            log_prob=traj_batch.extras["log_probs"],
+            truncated=traj_batch.done,
             info=traj_batch.extras,
         )
         learner_state, loss_info = _update_step(learner_state, traj_batch, key)

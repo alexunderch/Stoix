@@ -102,10 +102,10 @@ def shard_base_trajectory(traj: BaseTrajectory, devices: List[jax.Device]) -> Ba
     # We create a mapping of the trajectory data to their corresponding shard axis.
     # We set it to one since we want to shard across the parallel env axis.
     traj_axis = BaseTrajectory(
-        dones=1,
+        done=1,
         truncated=1,
-        actions=1,
-        rewards=1,
+        action=1,
+        reward=1,
         extras=jax.tree_map(lambda x: 1, traj.extras),
         obs=jax.tree_map(lambda x: 1, traj.obs),
         next_obs=jax.tree_map(lambda x: 0, traj.next_obs),
@@ -128,10 +128,10 @@ def make_base_trajectory(
     them to jax arrays.
     """
     return BaseTrajectory(
-        dones=jnp.asarray(traj_term),
+        done=jnp.asarray(traj_term),
         truncated=jnp.asarray(traj_trunc),
-        actions=jnp.asarray(traj_actions),
-        rewards=jnp.asarray(traj_rewards),
+        action=jnp.asarray(traj_actions),
+        reward=jnp.asarray(traj_rewards),
         extras=jax.tree_map(lambda *xs: jnp.array(xs), *traj_extras),
         obs=jax.tree_map(lambda *xs: jnp.array(xs), *traj_obs),
         next_obs=jax.tree_map(lambda xs: jnp.array(xs), next_obs),

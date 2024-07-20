@@ -24,7 +24,7 @@ class AsyncActor(core.StoppableComponent):
         actor_device: jax.Device,
         params_source: core.ParamsSource,
         pipeline: core.Pipeline,
-        actor_fn: core.ActorFn,
+        actor_fn: core.SebulbaActorFn,
         key: chex.PRNGKey,
         config: DictConfig,
         metrics_hub: MetricHub,
