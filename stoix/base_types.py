@@ -20,6 +20,8 @@ Done: TypeAlias = chex.Array
 Truncated: TypeAlias = chex.Array
 First: TypeAlias = chex.Array
 HiddenState: TypeAlias = chex.Array
+Extras: TypeAlias = chex.ArrayTree
+LossInfo: TypeAlias = chex.ArrayTree
 # Can't know the exact type of State.
 State: TypeAlias = Any
 Parameters: TypeAlias = Any

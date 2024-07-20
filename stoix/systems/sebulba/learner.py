@@ -1,5 +1,4 @@
 # Taken and modified from https://github.com/instadeepai/sebulba
-import math
 import queue
 from typing import Callable, List, Union
 
@@ -23,7 +22,7 @@ class AsyncLearner(core.StoppableComponent):
         pipeline: core.Pipeline,
         local_devices: List[jax.Device],
         init_state: StoixState,
-        step_fn: core.LearnFn,
+        step_fn: core.SebulbaLearnFn,
         key: chex.PRNGKey,
         metrics_hub: MetricHub,
         on_params_change: Union[List[Callable], None] = None,

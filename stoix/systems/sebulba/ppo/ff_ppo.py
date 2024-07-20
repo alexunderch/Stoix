@@ -20,8 +20,8 @@ from stoix.base_types import (
     ActorCriticParams,
     CriticApply,
     ExperimentOutput,
-    LearnerFn,
-    OptStates,
+    Extras,
+    Observation,
     Parameters,
 )
 from stoix.evaluator import evaluator_setup, get_distribution_act_fn
@@ -62,27 +62,23 @@ def get_env_specs(name: str) -> omegaconf.DictConfig:
     )
 
 
-class CoreLearnerState(NamedTuple):
-    params: Parameters
-    opt_states: OptStates
-    key: chex.PRNGKey
-
-
 def get_learner_fn(
     apply_fns: Tuple[ActorApply, CriticApply],
     update_fns: Tuple[optax.TransformUpdateFn, optax.TransformUpdateFn],
     config: DictConfig,
-) -> LearnerFn[CoreLearnerState]:
+) -> core.SebulbaLearnFn[core.CoreLearnerState]:
     """Get the learner function."""
 
     # Get apply and update functions for actor and critic networks.
     actor_apply_fn, critic_apply_fn = apply_fns
     actor_update_fn, critic_update_fn = update_fns
 
-    def _update_step(learner_state: CoreLearnerState, traj_batch: PPOTransition, key) -> Tuple[CoreLearnerState, Tuple]:
+    def _update_step(
+        learner_state: core.CoreLearnerState, traj_batch: PPOTransition, key: chex.PRNGKey
+    ) -> Tuple[core.CoreLearnerState, Tuple]:
 
         # CALCULATE ADVANTAGE
-        params, opt_states, _ = learner_state
+        params, opt_states = learner_state
 
         r_t = traj_batch.reward
         v_t = traj_batch.value
@@ -184,9 +180,9 @@ def get_learner_fn(
             key, shuffle_key = jax.random.split(key)
 
             # SHUFFLE MINIBATCHES
-            batch_size = config.system.rollout_length * (
-                config.arch.actor.envs_per_actor // len(config.arch.learner.device_ids)
-            )
+            # Since we shard the envs per actor across the devices
+            envs_per_batch = config.arch.actor.envs_per_actor // len(config.arch.learner.device_ids)
+            batch_size = config.system.rollout_length * envs_per_batch
             permutation = jax.random.permutation(shuffle_key, batch_size)
             batch = (traj_batch, advantages, targets)
             batch = jax.tree_util.tree_map(lambda x: merge_leading_dims(x, 2), batch)
@@ -209,13 +205,13 @@ def get_learner_fn(
         update_state, loss_info = jax.lax.scan(_update_epoch, update_state, None, config.system.epochs)
 
         params, opt_states, traj_batch, advantages, targets, key = update_state
-        learner_state = CoreLearnerState(params, opt_states, key)
+        learner_state = core.CoreLearnerState(params, opt_states)
 
         return learner_state, loss_info
 
     def learner_fn(
-        learner_state: CoreLearnerState, traj_batch: core.Trajectory, key
-    ) -> ExperimentOutput[CoreLearnerState]:
+        learner_state: core.CoreLearnerState, traj_batch: core.BaseTrajectory, key
+    ) -> ExperimentOutput[core.CoreLearnerState]:
 
         values = traj_batch.extras["values"]
         bootstrap_value = critic_apply_fn(learner_state.params.critic_params, traj_batch.next_obs)
@@ -242,10 +238,10 @@ def get_learner_fn(
     return learner_fn
 
 
-def learner_setup(keys: chex.Array, config: DictConfig) -> Tuple[LearnerFn[CoreLearnerState], Actor, CoreLearnerState]:
-    """Initialise learner_fn, network, optimiser, environment and states."""
-    # Get available TPU cores.
-    n_devices = len(jax.devices())
+def learner_setup(
+    keys: chex.Array, config: DictConfig
+) -> Tuple[core.SebulbaLearnFn[core.CoreLearnerState], Actor, core.CoreLearnerState]:
+    """Initialise learner_fn, network, optimiser"""
 
     # Get number/dimension of actions.
     num_actions = config.n_action
@@ -310,15 +306,29 @@ def learner_setup(keys: chex.Array, config: DictConfig) -> Tuple[LearnerFn[CoreL
         # Update the params
         params = restored_params
 
-    # Define params to be replicated across devices and batches.
-    key, step_key = jax.random.split(key)
-    step_keys = jax.random.split(step_key, n_devices)
-    step_keys = jnp.stack(step_keys)
+    # Define params to be replicated across devices.
     opt_states = ActorCriticOptStates(actor_opt_state, critic_opt_state)
     # Initialise learner state.
-    init_learner_state = CoreLearnerState(params, opt_states, step_keys)
+    init_learner_state = core.CoreLearnerState(params, opt_states)
 
-    return learn, actor_network, critic_network, init_learner_state
+    return learn, apply_fns, init_learner_state
+
+
+def get_actor_fn(actor_apply_fn: ActorApply, critic_apply_fn: CriticApply) -> core.SebulbaActorFn:
+    """Create the actor fn executed by the actor threads"""
+
+    def actor_fn(params: ActorCriticParams, obs: Observation, key: chex.PRNGKey) -> Tuple[chex.Array, Extras]:
+        pi = actor_apply_fn(params.actor_params, obs)
+        action = pi.sample(seed=key)
+        logprob = pi.log_prob(action)
+        value = critic_apply_fn(params.critic_params, obs)
+        extras = {
+            "log_probs": logprob,
+            "values": value.squeeze(),
+        }
+        return action, extras
+
+    return actor_fn
 
 
 def run_experiment(_config: DictConfig) -> float:
@@ -328,28 +338,30 @@ def run_experiment(_config: DictConfig) -> float:
     env_specs = get_env_specs(config.env.scenario.name)
     config = OmegaConf.merge(config, env_specs)
 
-    # Get jax devices local and global for learning
+    # Get the learner and actor devices
     local_devices = jax.local_devices()
     global_devices = jax.devices()
-    assert len(local_devices) == len(global_devices), "Local and global devices must be the same for now."
+    assert len(local_devices) == len(
+        global_devices
+    ), "Local and global devices must be the same for now. We dont support multihost just yet"
+
     actor_devices = [local_devices[device_id] for device_id in config.arch.actor.device_ids]
     local_learner_devices = [local_devices[device_id] for device_id in config.arch.learner.device_ids]
+    config.num_learning_devices = len(local_learner_devices)
+    config.num_actor_actor_devices = len(actor_devices)
+
     print(f"{Fore.YELLOW}{Style.BRIGHT}[Sebulba] Actors devices: {actor_devices}{Style.RESET_ALL}")
     print(f"{Fore.YELLOW}{Style.BRIGHT}[Sebulba] Learner devices: {local_learner_devices}{Style.RESET_ALL}")
 
-    # Calculate total timesteps.
-    # n_devices = len(jax.devices())
-    # config.num_devices = n_devices
-    # config = check_total_timesteps(config)
-    # assert (
-    #     config.arch.num_updates >= config.arch.num_evaluation
-    # ), "Number of updates per evaluation must be less than total number of updates."
-
     # PRNG keys.
-    key, key_e, actor_net_key, critic_net_key = jax.random.split(jax.random.PRNGKey(config.arch.seed), num=4)
+    key, actor_net_key, critic_net_key = jax.random.split(jax.random.PRNGKey(config.arch.seed), num=3)
 
     # Setup learner.
-    learn, actor_network, critic_network, learner_state = learner_setup((key, actor_net_key, critic_net_key), config)
+    learn, apply_fns, learner_state = learner_setup((key, actor_net_key, critic_net_key), config)
+
+    # Setup the actor function
+    actor_apply_fn, critic_apply_fn = apply_fns
+    actor_fn = get_actor_fn(actor_apply_fn, critic_apply_fn)
 
     # Logger setup
     logger = StoixLogger(config)
@@ -357,43 +369,37 @@ def run_experiment(_config: DictConfig) -> float:
     cfg["arch"]["devices"] = jax.devices()
     pprint(cfg)
 
+    # Set up the global logger manager
+    # This creates the thread that manages the shared logging of metrics between threads
     global_logger_manager = LoggerManager(logger)
+    # Start the logger manager thread
     global_logger_manager.start()
 
-    def actor_fn(params: Parameters, obs: chex.Array, key: chex.PRNGKey) -> Tuple[chex.Array, Any]:
-        """Actor function."""
-        pi = actor_network.apply(params.actor_params, obs)
-        action = pi.sample(seed=key)
-        logprob = pi.log_prob(action)
-        value = critic_network.apply(params.critic_params, obs)
-        extras = {
-            "logprobs": logprob,
-            "values": value.squeeze(),
-        }
-
-        return action, extras
-
     # Create environments factory
+    # This creates a callable function that returns vectorised environments
     env_factory = environments.make_envpool_factory(config)
 
-    # build Pipeline to pass trajectories between Actor's and Learner
+    # Build the Pipeline to pass trajectories between Actor's and Learner
     pipeline = core.Pipeline(max_size=5, learner_devices=local_learner_devices)
     pipeline.start()
 
+    # Split the key for the actors and learner
     key, learner_key, actors_key = jax.random.split(key, 3)
 
+    # Creating the actors
     actors = []
     params_sources = []
+    # Here we create a metric hub for the actors using the global logger manager
     actors_loggers = global_logger_manager["actors"]
     for actor_device in actor_devices:
-        # Create 1 params source per actor device
+        # Create 1 params source per actor device as this will be used to pass the params to the actors
         params_source = core.ParamsSource(learner_state.params, actor_device)
         params_source.start()
         params_sources.append(params_source)
-
+        # Now for each device we choose to create multiple actor threads
         for i in range(config.arch.actor.actor_per_device):
             actors_key, key = jax.random.split(actors_key)
-            # Create Actors
+            # Create the actual actor
             actor = AsyncActor(
                 env_factory,
                 actor_device,
@@ -407,8 +413,11 @@ def run_experiment(_config: DictConfig) -> float:
             )
             actors.append(actor)
 
+    # Create a metric hub for the learner using the global logger manager
     learner_loggers = global_logger_manager["learner"]
     # Create Learner
+    # Here we pass in all of the params_source update fns so that the
+    # learner can update all the actors
     learner = AsyncLearner(
         pipeline,
         local_learner_devices,
@@ -419,17 +428,23 @@ def run_experiment(_config: DictConfig) -> float:
         on_params_change=[params_source.update for params_source in params_sources],
     )
 
-    # Start Learner and Actors
+    # Now we start all the Learner and Actor threads
     learner.start()
     for actor in actors:
         actor.start()
+    # These are now running and performing their tasks separately
+    # So in the main thread we can now wait for the stopper thread
+    # to signal to them to stop running
 
     try:
         # Create our stopper and wait for it to stop
+        # We pass it the global logger manager, not just a metric hub so it
+        # has access to all metrics and can use them to decide when to stop
         stopper = ActorStepStopper(config, logger_manager=global_logger_manager)
         stopper.wait()
     finally:
         print(f"{Fore.RED}{Style.BRIGHT}Shutting down{Style.RESET_ALL}")
+
         # Try to gracefully shutdown all components
         # If not finished after 10 second exits anyway
 
