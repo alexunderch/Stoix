@@ -30,6 +30,7 @@ from stoix.networks.base import FeedForwardCritic as Critic
 from stoix.systems.anakin.ppo.ppo_types import PPOTransition
 from stoix.systems.sebulba import core
 from stoix.systems.sebulba.actor import AsyncActor
+from stoix.systems.sebulba.evaluator import AsyncEvaluator
 from stoix.systems.sebulba.learner import AsyncLearner
 from stoix.systems.sebulba.metrics import LoggerManager
 from stoix.systems.sebulba.stoppers import ActorStepStopper, LearnerStepStopper, Stopper
@@ -47,20 +48,6 @@ from stoix.utils.multistep import batch_truncated_generalized_advantage_estimati
 from stoix.utils.total_timestep_checker import check_total_timesteps
 from stoix.utils.training import make_learning_rate
 from stoix.wrappers.episode_metrics import get_final_step_metrics
-
-
-def get_env_specs(name: str) -> omegaconf.DictConfig:
-    env = envpool.make(name, "gym")
-    obs_shape = env.observation_space.shape
-    n_action = env.action_space.n
-    env.close()
-    return omegaconf.OmegaConf.create(
-        {
-            "obs_shape": obs_shape,
-            "n_action": n_action,
-        }
-    )
-
 
 def get_learner_fn(
     apply_fns: Tuple[ActorApply, CriticApply],
@@ -240,12 +227,15 @@ def get_learner_fn(
 
 
 def learner_setup(
-    keys: chex.Array, config: DictConfig
+    env_factory, keys: Tuple[chex.PRNGKey, chex.PRNGKey, chex.PRNGKey], config: DictConfig
 ) -> Tuple[core.SebulbaLearnFn[core.CoreLearnerState], Actor, core.CoreLearnerState]:
     """Initialise learner_fn, network, optimiser"""
 
     # Get number/dimension of actions.
-    num_actions = config.n_action
+    env = env_factory(num_envs=1)
+    obs_shape = env.observation_space.shape
+    num_actions = int(env.action_space.n)
+    env.close()
     config.system.action_dim = num_actions
 
     # PRNG keys.
@@ -273,7 +263,7 @@ def learner_setup(
     )
 
     # Initialise observation
-    init_x = jnp.ones(config.obs_shape)
+    init_x = jnp.ones(obs_shape)
     init_x = jax.tree_util.tree_map(lambda x: x[None, ...], init_x)
 
     # Initialise actor params and optimiser state.
@@ -336,9 +326,10 @@ def run_experiment(_config: DictConfig) -> float:
     """Runs experiment."""
     config = copy.deepcopy(_config)
 
-    env_specs = get_env_specs(config.env.scenario.name)
-    config = OmegaConf.merge(config, env_specs)
-
+    # Create environments factory
+    # This creates a callable function that returns vectorised environments
+    env_factory = environments.make_envpool_factory(config)
+    
     # Get the learner and actor devices
     local_devices = jax.local_devices()
     global_devices = jax.devices()
@@ -348,6 +339,7 @@ def run_experiment(_config: DictConfig) -> float:
 
     actor_devices = [local_devices[device_id] for device_id in config.arch.actor.device_ids]
     local_learner_devices = [local_devices[device_id] for device_id in config.arch.learner.device_ids]
+    evaluator_device = local_devices[config.arch.evaluator_device_id]
     config.num_learning_devices = len(local_learner_devices)
     config.num_actor_actor_devices = len(actor_devices)
 
@@ -358,7 +350,7 @@ def run_experiment(_config: DictConfig) -> float:
     key, actor_net_key, critic_net_key = jax.random.split(jax.random.PRNGKey(config.arch.seed), num=3)
 
     # Setup learner.
-    learn, apply_fns, learner_state = learner_setup((key, actor_net_key, critic_net_key), config)
+    learn, apply_fns, learner_state = learner_setup(env_factory, (key, actor_net_key, critic_net_key), config)
 
     # Setup the actor function
     actor_apply_fn, critic_apply_fn = apply_fns
@@ -376,10 +368,6 @@ def run_experiment(_config: DictConfig) -> float:
     # Start the logger manager thread
     global_logger_manager.start()
 
-    # Create environments factory
-    # This creates a callable function that returns vectorised environments
-    env_factory = environments.make_envpool_factory(config)
-
     # Build the Pipeline to pass trajectories between Actor's and Learner
     pipeline = core.Pipeline(max_size=5, learner_devices=local_learner_devices)
     pipeline.start()
@@ -387,11 +375,36 @@ def run_experiment(_config: DictConfig) -> float:
     # Split the key for the actors and learner
     key, learner_key, actors_key = jax.random.split(key, 3)
 
-    # Creating the actors
+    # Calculate the number of envs per actor
+    num_envs_per_actor_device = config.arch.total_num_envs // len(actor_devices)
+    num_envs_per_actor = num_envs_per_actor_device // config.arch.actor.actor_per_device
+    config.arch.actor.envs_per_actor = num_envs_per_actor
+    
+    
+    # Creating the actors and evaluator
     actors = []
     params_sources = []
-    # Here we create a metric hub for the actors using the global logger manager
+    # Here we create a metric hub for the actors and evaluator using the global logger manager
     actors_loggers = global_logger_manager["actors"]
+    eval_logger = global_logger_manager["evaluator"]
+    
+    # Create 1 params source for the evaluator
+    params_source = core.ParamsSource(learner_state.params, evaluator_device)
+    params_source.start()
+    params_sources.append(params_source)
+    eval_key, key = jax.random.split(key)
+    # Create the evaluator
+    evaluator = AsyncEvaluator(
+        env_factory,
+        evaluator_device,
+        params_source,
+        actor_fn,
+        eval_key,
+        config,
+        eval_logger,
+        f"Eval-{evaluator_device.id}",
+        )
+        
     for actor_device in actor_devices:
         # Create 1 params source per actor device as this will be used to pass the params to the actors
         params_source = core.ParamsSource(learner_state.params, actor_device)
@@ -429,10 +442,12 @@ def run_experiment(_config: DictConfig) -> float:
         on_params_change=[params_source.update for params_source in params_sources],
     )
 
+
     # Now we start all the Learner and Actor threads
     learner.start()
     for actor in actors:
         actor.start()
+    evaluator.start()
     # These are now running and performing their tasks separately
     # So in the main thread we can now wait for the stopper thread
     # to signal to them to stop running
@@ -452,11 +467,13 @@ def run_experiment(_config: DictConfig) -> float:
         def graceful_shutdown():
             for actor in actors:
                 actor.stop()
+            evaluator.stop()
             for params_source in params_sources:
                 params_source.stop()
 
             for actor in actors:
                 actor.join()
+            evaluator.join()
 
             learner.stop()
             learner.join()
@@ -475,25 +492,7 @@ def run_experiment(_config: DictConfig) -> float:
         if graceful_thread.is_alive():
             print(f"{Fore.RED}{Style.BRIGHT}Shutdown was not graceful{Style.RESET_ALL}")
 
-    # Setup evaluator.
-    # evaluator, absolute_metric_evaluator, (trained_params, eval_keys) = evaluator_setup(
-    #     eval_env=eval_env,
-    #     key_e=key_e,
-    #     eval_act_fn=get_distribution_act_fn(config, actor_network.apply),
-    #     params=learner_state.params.actor_params,
-    #     config=config,
-    # )
-
-    # Calculate number of updates per evaluation.
-    # config.arch.num_updates_per_eval = config.arch.num_updates // config.arch.num_evaluation
-    # steps_per_rollout = (
-    #     n_devices
-    #     * config.arch.num_updates_per_eval
-    #     * config.system.rollout_length
-    #     * config.arch.update_batch_size
-    #     * config.arch.num_envs
-    # )
-
+    
     # Set up checkpointer
     # save_checkpoint = config.logger.checkpointing.save_model
     # if save_checkpoint:

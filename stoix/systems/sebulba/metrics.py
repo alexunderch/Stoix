@@ -183,6 +183,7 @@ class LoggerManager(core.StoppableComponent):
         We also specifically cater to metric hubs with the names `actors` and `learner`."""
         actor_values = {}
         learner_values = {}
+        evaluator_values = {}
         misc_values = {}
         names = list(self.metric_hubs.keys())
         for name in names:
@@ -191,6 +192,8 @@ class LoggerManager(core.StoppableComponent):
                 actor_values.update(metric_hub.flush())
             elif "learner" in name:
                 learner_values.update(metric_hub.flush())
+            elif "evaluator" in name:
+                evaluator_values.update(metric_hub.flush())
             else:
                 misc_values.update(metric_hub.flush())
         if actor_values:
@@ -199,6 +202,9 @@ class LoggerManager(core.StoppableComponent):
         if learner_values:
             learner_values = {f"{k[8:]}": v for k, v in learner_values.items()}
             self.stoix_logger.log(learner_values, self.step, self.step, LogEvent.TRAIN)
+        if evaluator_values:
+            evaluator_values = {f"{k[10:]}": v for k, v in evaluator_values.items()}
+            self.stoix_logger.log(evaluator_values, self.step, self.step, LogEvent.EVAL)
         if misc_values:
             self.stoix_logger.log(misc_values, self.step, self.step, LogEvent.MISC)
         if actor_values or learner_values or misc_values:
