@@ -1,13 +1,11 @@
 import copy
 import threading
-from typing import Any, Dict, NamedTuple, Tuple
+from typing import Any, Dict, Tuple
 
 import chex
-import envpool
 import hydra
 import jax
 import jax.numpy as jnp
-import omegaconf
 import optax
 from colorama import Fore, Style
 from flax.core.frozen_dict import FrozenDict
@@ -19,12 +17,10 @@ from stoix.base_types import (
     ActorCriticOptStates,
     ActorCriticParams,
     CriticApply,
-    ExperimentOutput,
     Extras,
+    LossInfo,
     Observation,
-    Parameters,
 )
-from stoix.evaluator import evaluator_setup, get_distribution_act_fn
 from stoix.networks.base import FeedForwardActor as Actor
 from stoix.networks.base import FeedForwardCritic as Critic
 from stoix.systems.anakin.ppo.ppo_types import PPOTransition
@@ -33,21 +29,15 @@ from stoix.systems.sebulba.actor import AsyncActor
 from stoix.systems.sebulba.evaluator import AsyncEvaluator
 from stoix.systems.sebulba.learner import AsyncLearner
 from stoix.systems.sebulba.metrics import LoggerManager
-from stoix.systems.sebulba.stoppers import ActorStepStopper, LearnerStepStopper, Stopper
+from stoix.systems.sebulba.stoppers import ActorStepStopper
 from stoix.utils import make_env as environments
 from stoix.utils.checkpointing import Checkpointer
-from stoix.utils.env_pool import EnvPoolFactory
-from stoix.utils.jax_utils import (
-    merge_leading_dims,
-    unreplicate_batch_dim,
-    unreplicate_n_dims,
-)
-from stoix.utils.logger import LogEvent, StoixLogger
+from stoix.utils.jax_utils import merge_leading_dims
+from stoix.utils.logger import StoixLogger
 from stoix.utils.loss import clipped_value_loss, ppo_clip_loss
 from stoix.utils.multistep import batch_truncated_generalized_advantage_estimation
-from stoix.utils.total_timestep_checker import check_total_timesteps
 from stoix.utils.training import make_learning_rate
-from stoix.wrappers.episode_metrics import get_final_step_metrics
+
 
 def get_learner_fn(
     apply_fns: Tuple[ActorApply, CriticApply],
@@ -197,8 +187,8 @@ def get_learner_fn(
         return learner_state, loss_info
 
     def learner_fn(
-        learner_state: core.CoreLearnerState, traj_batch: core.BaseTrajectory, key
-    ) -> ExperimentOutput[core.CoreLearnerState]:
+        learner_state: core.CoreLearnerState, traj_batch: core.BaseTrajectory, key: chex.PRNGKey
+    ) -> Tuple[core.CoreLearnerState, LossInfo]:
 
         values = traj_batch.extras["values"]
         bootstrap_value = critic_apply_fn(learner_state.params.critic_params, traj_batch.next_obs)
@@ -227,7 +217,7 @@ def get_learner_fn(
 
 
 def learner_setup(
-    env_factory, keys: Tuple[chex.PRNGKey, chex.PRNGKey, chex.PRNGKey], config: DictConfig
+    env_factory: core.EnvBuilder, keys: Tuple[chex.PRNGKey, chex.PRNGKey, chex.PRNGKey], config: DictConfig
 ) -> Tuple[core.SebulbaLearnFn[core.CoreLearnerState], Actor, core.CoreLearnerState]:
     """Initialise learner_fn, network, optimiser"""
 
@@ -329,7 +319,7 @@ def run_experiment(_config: DictConfig) -> float:
     # Create environments factory
     # This creates a callable function that returns vectorised environments
     env_factory = environments.make_envpool_factory(config)
-    
+
     # Get the learner and actor devices
     local_devices = jax.local_devices()
     global_devices = jax.devices()
@@ -379,15 +369,14 @@ def run_experiment(_config: DictConfig) -> float:
     num_envs_per_actor_device = config.arch.total_num_envs // len(actor_devices)
     num_envs_per_actor = num_envs_per_actor_device // config.arch.actor.actor_per_device
     config.arch.actor.envs_per_actor = num_envs_per_actor
-    
-    
+
     # Creating the actors and evaluator
     actors = []
     params_sources = []
     # Here we create a metric hub for the actors and evaluator using the global logger manager
     actors_loggers = global_logger_manager["actors"]
     eval_logger = global_logger_manager["evaluator"]
-    
+
     # Create 1 params source for the evaluator
     params_source = core.ParamsSource(learner_state.params, evaluator_device)
     params_source.start()
@@ -403,8 +392,8 @@ def run_experiment(_config: DictConfig) -> float:
         config,
         eval_logger,
         f"Eval-{evaluator_device.id}",
-        )
-        
+    )
+
     for actor_device in actor_devices:
         # Create 1 params source per actor device as this will be used to pass the params to the actors
         params_source = core.ParamsSource(learner_state.params, actor_device)
@@ -441,7 +430,6 @@ def run_experiment(_config: DictConfig) -> float:
         learner_loggers,
         on_params_change=[params_source.update for params_source in params_sources],
     )
-
 
     # Now we start all the Learner and Actor threads
     learner.start()
@@ -492,7 +480,6 @@ def run_experiment(_config: DictConfig) -> float:
         if graceful_thread.is_alive():
             print(f"{Fore.RED}{Style.BRIGHT}Shutdown was not graceful{Style.RESET_ALL}")
 
-    
     # Set up checkpointer
     # save_checkpoint = config.logger.checkpointing.save_model
     # if save_checkpoint:

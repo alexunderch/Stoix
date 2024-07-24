@@ -25,7 +25,7 @@ from popjym.registration import REGISTERED_ENVS as POPJYM_REGISTRY
 from xminigrid.registration import _REGISTRY as XMINIGRID_REGISTRY
 
 from stoix.utils.debug_env import IdentityGame, SequenceGame
-from stoix.utils.env_pool import EnvPoolFactory
+from stoix.utils.env_factory import EnvPoolFactory
 from stoix.wrappers import GymnaxWrapper, JumanjiWrapper, RecordEpisodeMetrics
 from stoix.wrappers.brax import BraxJumanjiWrapper
 from stoix.wrappers.jaxmarl import JaxMarlWrapper, MabraxWrapper, SmaxWrapper

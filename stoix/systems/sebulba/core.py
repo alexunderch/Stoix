@@ -204,7 +204,7 @@ class Pipeline(StoppableComponent):
         )
 
         traj_sharded = shard_base_trajectory(full_traj, self.learner_devices)
-        traj_sharded = self.process_base_traj_fn(traj_sharded)
+        traj_sharded = self.process_base_traj_fn(traj_sharded)  # type: ignore
         self._queue.put(traj_sharded)
 
         with end_condition:

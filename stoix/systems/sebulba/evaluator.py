@@ -57,7 +57,7 @@ class AsyncEvaluator(core.StoppableComponent):
 
             while not self.should_stop:
                 params = self.params_source.get()
-                
+
                 self.rng, key = self.split_key_fn(self.rng)
                 action, _ = self.actor_fn(params, obs, key)
 

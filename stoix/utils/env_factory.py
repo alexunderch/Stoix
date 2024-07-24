@@ -1,10 +1,21 @@
+import abc
 import threading
 from typing import Any
 
 import envpool
 
 
-class EnvPoolFactory:
+class EnvFactory(abc.ABC):
+    """
+    Abstract class to create environments
+    """
+
+    @abc.abstractmethod
+    def __call__(self, num_envs: int) -> Any:
+        pass
+
+
+class EnvPoolFactory(EnvFactory):
     """
     Create environments with different seeds for each `Actor`
     """
